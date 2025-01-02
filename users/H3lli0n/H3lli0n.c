@@ -1,6 +1,6 @@
 #include QMK_KEYBOARD_H
 #include <stdio.h>
-#include "bitmaps.h"
+#include "H3lli0n.h"
 
 enum layers {
     _QWERTY = 0,
@@ -328,9 +328,7 @@ bool oled_task_user(void) {
 
 	if (is_keyboard_left()) {
         oled_set_cursor(0, 0);
-        //render_layer_state();
-		render_logo();
-		render_wpm();
+        render_layer_state();
         render_modifiers_l(8);
     } else {
 		oled_set_cursor(0, 0);
