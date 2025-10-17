@@ -1,6 +1,7 @@
 // Copyright 2025 HLB
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include QMK_KEYBOARD_H
+#include <lib/lib8tion/lib8tion.h>
 
 enum layers {
     _BASE,
@@ -31,10 +32,6 @@ const hsv_t LAYER_GAMING_COLOR = {HSV_CYAN};
 const hsv_t LAYER_MAC_COLOR = {HSV_RED};
 const hsv_t LAYER_INDIC_COLOR = {HSV_WHITE};
 const hsv_t CAPS_INDIC_COLOR = {HSV_GREEN};
-
-/* Feature toggle blink duration */
-const uint16_t RGB_BLINK_DURATION = 1000;
-const uint8_t RGB_INDICATOR_LED_IDX = 18;
 
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 // main layer
@@ -67,67 +64,80 @@ kb_config_t kb_config;
 
 /* handling user indicator mode change */
 uint8_t layerIndicatorChanged = 0;
-
-/* Managing RGB leds and preferences */
+uint32_t waitBlinkTime = 0;
+static deferred_token rgbIndic_token = INVALID_DEFERRED_TOKEN;
 
 /* Initial data container */
-void eeconfig_init_kb(void) {  // EEPROM is getting reset!
+void eeconfig_init_user(void) {
   kb_config.raw = 0;
-  kb_config.rgb_layer_change = false; // We want this enabled by default
-  eeconfig_update_kb(kb_config.raw); // Write default value to EEPROM now
+  kb_config.rgb_layer_change = false;
+  eeconfig_update_user(kb_config.raw);
 }
 
-/* Read indicator preference */
-void keyboard_post_init_kb(void) {
+/* Activate LED for indicator - read configuration */
+void keyboard_post_init_user(void) {
     // Read the user config from EEPROM
-    kb_config.raw = eeconfig_read_kb();
-}
+    kb_config.raw = eeconfig_read_user();
 
-/* Activate LED for indicator */
-void keyboard_pre_init_kb(void) {
     rgb_matrix_mode_noeeprom(RGB_MATRIX_SOLID_COLOR);
     rgb_matrix_sethsv_noeeprom(HSV_OFF);
-    keyboard_pre_init_user();
+}
+
+/* Callback to cancel led indicator white color */
+uint32_t indicatorParamChangedCallback(uint32_t trigger_time, void *cb_arg) {
+    uint32_t res = 0;
+     //Default state
+    rgb_t rgbValue = hsv_to_rgb(OFF_COLOR);
+    if (layerIndicatorChanged == 1 && waitBlinkTime < RGB_BLINK_DURATION){
+        //Notification state
+        rgbValue = hsv_to_rgb(CONF_CHANGED_COLOR);
+        //Compute running time
+        waitBlinkTime += RGB_BLINK_FAST_PERIOD_MS;
+        res = RGB_BLINK_FAST_PERIOD_MS;
+    } else {
+        //Done
+        layerIndicatorChanged = 0;
+        waitBlinkTime = 0;
+    }
+
+    rgb_matrix_set_color(RGB_INDICATOR_LED_IDX, rgbValue.r, rgbValue.g, rgbValue.b);
+
+    return res;
 }
 
 /* Update user preference on layer indicator*/
-bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
-    process_record_user(keycode, record);
-
+bool process_record_user(uint16_t keycode, keyrecord_t *record) {
     switch (keycode) {
     case LAY_INDIC_RGB:
       if (record->event.pressed) {
         kb_config.rgb_layer_change ^= 1; // Toggles the status
-        eeconfig_update_kb(kb_config.raw); // Writes the new status to EEPROM
+        eeconfig_update_user(kb_config.raw); // Writes the new status to EEPROM
 
         //We need a led status update
         layerIndicatorChanged = 1;
+
+        if (rgbIndic_token != INVALID_DEFERRED_TOKEN){
+            cancel_deferred_exec(rgbIndic_token);
+        }
+
+        //Indicator will be on for RGB_BLINK_DURATION duration and reset to off through callback
+        rgbIndic_token = defer_exec(1, indicatorParamChangedCallback, NULL);
       }
-      return false; // Skip all further processing of this key
+      return false;
 
     default:
-      return true; // Process all other keycodes normally
+      return true;
   }
 }
 
 /* Managing indicator color based on state and layer */
-bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
-    //default
-    rgb_t rgbValue = hsv_to_rgb(OFF_COLOR);
+bool rgb_matrix_indicators_user(void) {
+    if (layerIndicatorChanged == 1){
+        return false;
+    }
 
     //Handling user mode toggle by updating indicator LED for few seconds
-    if (layerIndicatorChanged == 1){
-        //White color to warm
-        rgb_t rgbValue = hsv_to_rgb(CONF_CHANGED_COLOR);
-        RGB_MATRIX_INDICATOR_SET_COLOR(RGB_INDICATOR_LED_IDX, rgbValue.r, rgbValue.g, rgbValue.b);
-        //Few seconds before getting back to normal
-        wait_ms(RGB_BLINK_DURATION);
-        //Default state
-        rgbValue = hsv_to_rgb(OFF_COLOR);
-        RGB_MATRIX_INDICATOR_SET_COLOR(RGB_INDICATOR_LED_IDX, rgbValue.r, rgbValue.g, rgbValue.b);
-        //Done
-        layerIndicatorChanged = 0;
-    }
+    rgb_t rgbValue = hsv_to_rgb(OFF_COLOR);
 
     //Capslock
     if (host_keyboard_led_state().caps_lock) {
@@ -153,6 +163,6 @@ bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
     }
 
     //Update indicator LED
-    RGB_MATRIX_INDICATOR_SET_COLOR(RGB_INDICATOR_LED_IDX, rgbValue.r, rgbValue.g, rgbValue.b);
+    rgb_matrix_set_color(RGB_INDICATOR_LED_IDX, rgbValue.r, rgbValue.g, rgbValue.b);
     return false;
 }
