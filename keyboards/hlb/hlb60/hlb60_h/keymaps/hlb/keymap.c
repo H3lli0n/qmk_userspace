@@ -24,14 +24,13 @@ typedef union {
 } kb_config_t;
 
 /* Predefined colors */
-const hsv_t OFF_COLOR = {HSV_OFF};
-const hsv_t CONF_CHANGED_COLOR = {HSV_WHITE};
-const hsv_t LAYER_FN_COLOR = {HSV_PURPLE};
-const hsv_t LAYER_MEDIA_COLOR = {HSV_ORANGE};
-const hsv_t LAYER_GAMING_COLOR = {HSV_CYAN};
-const hsv_t LAYER_MAC_COLOR = {HSV_RED};
-const hsv_t LAYER_INDIC_COLOR = {HSV_WHITE};
-const hsv_t CAPS_INDIC_COLOR = {HSV_GREEN};
+static const hsv_t OFF_COLOR = {HSV_OFF};
+static const hsv_t CONF_CHANGED_COLOR = {HSV_WHITE};
+static const hsv_t LAYER_FN_COLOR = {HSV_PURPLE};
+static const hsv_t LAYER_MEDIA_COLOR = {HSV_ORANGE};
+static const hsv_t LAYER_GAMING_COLOR = {HSV_CYAN};
+static const hsv_t LAYER_MAC_COLOR = {HSV_RED};
+static const hsv_t CAPS_INDIC_COLOR = {HSV_GREEN};
 
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 // main layer
@@ -63,8 +62,10 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 kb_config_t kb_config;
 
 /* handling user indicator mode change */
-uint8_t layerIndicatorChanged = 0;
-uint32_t waitBlinkTime = 0;
+static uint8_t layerIndicatorChanged = 0;
+static uint32_t blinkTime = 0;
+
+/* deferred token */
 static deferred_token rgbIndic_token = INVALID_DEFERRED_TOKEN;
 
 /* Initial data container */
@@ -78,31 +79,11 @@ void eeconfig_init_user(void) {
 void keyboard_post_init_user(void) {
     // Read the user config from EEPROM
     kb_config.raw = eeconfig_read_user();
-
-    rgb_matrix_mode_noeeprom(RGB_MATRIX_SOLID_COLOR);
-    rgb_matrix_sethsv_noeeprom(HSV_OFF);
-}
-
-/* Callback to cancel led indicator white color */
-uint32_t indicatorParamChangedCallback(uint32_t trigger_time, void *cb_arg) {
-    uint32_t res = 0;
-     //Default state
-    rgb_t rgbValue = hsv_to_rgb(OFF_COLOR);
-    if (layerIndicatorChanged == 1 && waitBlinkTime < RGB_BLINK_DURATION){
-        //Notification state
-        rgbValue = hsv_to_rgb(CONF_CHANGED_COLOR);
-        //Compute running time
-        waitBlinkTime += RGB_BLINK_FAST_PERIOD_MS;
-        res = RGB_BLINK_FAST_PERIOD_MS;
-    } else {
-        //Done
-        layerIndicatorChanged = 0;
-        waitBlinkTime = 0;
+    // We activate RGb for indicator
+    if(!rgb_matrix_is_enabled()) {
+        rgb_matrix_mode_noeeprom(RGB_MATRIX_SOLID_COLOR);
+        rgb_matrix_sethsv_noeeprom(HSV_OFF);
     }
-
-    rgb_matrix_set_color(RGB_INDICATOR_LED_IDX, rgbValue.r, rgbValue.g, rgbValue.b);
-
-    return res;
 }
 
 /* Update user preference on layer indicator*/
@@ -115,13 +96,6 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 
         //We need a led status update
         layerIndicatorChanged = 1;
-
-        if (rgbIndic_token != INVALID_DEFERRED_TOKEN){
-            cancel_deferred_exec(rgbIndic_token);
-        }
-
-        //Indicator will be on for RGB_BLINK_DURATION duration and reset to off through callback
-        rgbIndic_token = defer_exec(1, indicatorParamChangedCallback, NULL);
       }
       return false;
 
@@ -130,18 +104,32 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
   }
 }
 
-/* Managing indicator color based on state and layer */
-bool rgb_matrix_indicators_user(void) {
-    if (layerIndicatorChanged == 1){
-        return false;
+/* Callback led indicator white color */
+uint32_t indicatorParamChangedCallback(uint32_t trigger_time, void *cb_arg) {
+    //Stopping change from indicator callback
+    if (blinkTime > RGB_BLINK_TIME_DURATION){
+        layerIndicatorChanged = 0;
+        blinkTime = 0;
+        return 0;
     }
 
+    //Toggling the boolean
+    layerIndicatorChanged = (layerIndicatorChanged + 1)%2;
+    blinkTime += RGB_BLINK_FAST_PERIOD_MS;
+    return RGB_BLINK_FAST_PERIOD_MS;
+}
+
+
+/* Managing indicator color based on state and layer */
+bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
     //Handling user mode toggle by updating indicator LED for few seconds
     rgb_t rgbValue = hsv_to_rgb(OFF_COLOR);
 
     //Capslock
     if (host_keyboard_led_state().caps_lock) {
         rgbValue = hsv_to_rgb(CAPS_INDIC_COLOR);
+    } else if (layerIndicatorChanged == 1) {
+        rgbValue = hsv_to_rgb(CONF_CHANGED_COLOR);
     } else if(kb_config.rgb_layer_change) {
         //Color depending current activated layer
         switch(get_highest_layer(layer_state|default_layer_state)) {
@@ -164,5 +152,16 @@ bool rgb_matrix_indicators_user(void) {
 
     //Update indicator LED
     rgb_matrix_set_color(RGB_INDICATOR_LED_IDX, rgbValue.r, rgbValue.g, rgbValue.b);
+
+    //Override color with indicator change color if needed
+    if (layerIndicatorChanged == 1 && blinkTime == 0) {
+         //Cancelling deferred callback
+        cancel_deferred_exec(rgbIndic_token);
+        rgbIndic_token = INVALID_DEFERRED_TOKEN;
+
+        //Indicator will be on for RGB_BLINK_DURATION duration and reset to off through callback
+        rgbIndic_token = defer_exec(5, indicatorParamChangedCallback, NULL);
+    }
+
     return false;
 }
