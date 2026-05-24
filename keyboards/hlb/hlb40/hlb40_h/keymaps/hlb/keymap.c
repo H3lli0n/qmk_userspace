@@ -1,0 +1,164 @@
+// Copyright 2026 HLB
+// SPDX-License-Identifier: GPL-2.0-or-later
+#include QMK_KEYBOARD_H
+#include <lib/lib8tion/lib8tion.h>
+
+enum layers {
+    _BASE,
+    _FN,
+    _MEDIA,
+    _GAME,
+    _MAC
+};
+
+enum hlbKeycodes {
+    LAY_INDIC_RGB = QK_KB_0,
+};
+
+/* Data structure*/
+typedef union {
+  uint32_t raw;
+  struct {
+    bool     rgb_layer_change :1;
+  };
+} kb_config_t;
+
+/* Predefined colors */
+static const hsv_t OFF_COLOR = {HSV_OFF};
+static const hsv_t CONF_CHANGED_COLOR = {HSV_WHITE};
+static const hsv_t LAYER_FN_COLOR = {HSV_PURPLE};
+static const hsv_t LAYER_MEDIA_COLOR = {HSV_ORANGE};
+static const hsv_t LAYER_GAMING_COLOR = {HSV_CYAN};
+static const hsv_t LAYER_MAC_COLOR = {HSV_RED};
+static const hsv_t CAPS_INDIC_COLOR = {HSV_GREEN};
+
+const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
+// main layer
+[_BASE] = LAYOUT(
+  KC_TAB,   KC_Q,     KC_W,     KC_E,     KC_R,     KC_T,       KC_Y,      KC_U,      KC_I,      KC_O,       KC_P,    KC_BSPC,
+  KC_CAPS,  KC_A,     KC_S,     KC_D,     KC_F,     KC_G,       KC_H,      KC_J,      KC_K,      KC_L,       KC_NUHS, KC_ENT,
+  KC_LSFT,  KC_NUBS,  KC_Z,     KC_X,     KC_C,     KC_V,       KC_B,      KC_N,      KC_M,      KC_COMM,    KC_DOT,  KC_RSFT,
+            KC_LGUI,  KC_LALT,            KC_SPC,    MO(2),      KC_SPC,              KC_RALT,   KC_RGUI),
+
+// basic function layer
+[_FN] = LAYOUT(
+  KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS,     KC_TRNS,     KC_TRNS,       KC_TRNS,      KC_TRNS,      KC_TRNS,   KC_TRNS,    KC_TRNS,  KC_TRNS,
+  KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS,     KC_TRNS,     KC_TRNS,       KC_TRNS,      KC_TRNS,      KC_TRNS,   KC_TRNS,    KC_TRNS,  KC_TRNS,
+  KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS,     KC_TRNS,     KC_TRNS,       KC_TRNS,      KC_TRNS,      KC_TRNS,   KC_TRNS,    KC_TRNS,  KC_TRNS,
+            KC_TRNS,  KC_TRNS,               KC_TRNS,     KC_TRNS,       KC_TRNS,                    KC_TRNS,   KC_TRNS),
+
+// rgb/media layer
+[_MEDIA] = LAYOUT(
+  KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS,     KC_TRNS,     KC_TRNS,       KC_TRNS,      KC_TRNS,      KC_TRNS,   KC_TRNS,    KC_TRNS,  KC_TRNS,
+  KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS,     KC_TRNS,     KC_TRNS,       KC_TRNS,      KC_TRNS,      KC_TRNS,   KC_TRNS,    KC_TRNS,  KC_TRNS,
+  KC_TRNS,  KC_TRNS,  KC_TRNS,  KC_TRNS,     KC_TRNS,     KC_TRNS,       KC_TRNS,      KC_TRNS,      KC_TRNS,   KC_TRNS,    KC_TRNS,  KC_TRNS,
+            KC_TRNS,  KC_TRNS,               KC_TRNS,     KC_TRNS,       KC_TRNS,                    KC_TRNS,   KC_TRNS)
+};
+
+/* keyboard preference */
+kb_config_t kb_config;
+
+/* handling user indicator mode change */
+static uint8_t layerIndicatorChanged = 0;
+static uint32_t blinkTime = 0;
+
+/* deferred token */
+static deferred_token rgbIndic_token = INVALID_DEFERRED_TOKEN;
+
+/* Initial data container */
+void eeconfig_init_user(void) {
+  kb_config.raw = 0;
+  kb_config.rgb_layer_change = false;
+  eeconfig_update_user(kb_config.raw);
+}
+
+/* Activate LED for indicator - read configuration */
+void keyboard_post_init_user(void) {
+    // Read the user config from EEPROM
+    kb_config.raw = eeconfig_read_user();
+    // We activate RGb for indicator
+    if(!rgb_matrix_is_enabled()) {
+        rgb_matrix_mode_noeeprom(RGB_MATRIX_SOLID_COLOR);
+        rgb_matrix_sethsv_noeeprom(HSV_OFF);
+    }
+}
+
+/* Update user preference on layer indicator*/
+bool process_record_user(uint16_t keycode, keyrecord_t *record) {
+    switch (keycode) {
+    case LAY_INDIC_RGB:
+      if (record->event.pressed) {
+        kb_config.rgb_layer_change ^= 1; // Toggles the status
+        eeconfig_update_user(kb_config.raw); // Writes the new status to EEPROM
+
+        //We need a led status update
+        layerIndicatorChanged = 1;
+      }
+      return false;
+
+    default:
+      return true;
+  }
+}
+
+/* Callback led indicator white color */
+uint32_t indicatorParamChangedCallback(uint32_t trigger_time, void *cb_arg) {
+    //Stopping change from indicator callback
+    if (blinkTime > RGB_BLINK_TIME_DURATION){
+        layerIndicatorChanged = 0;
+        blinkTime = 0;
+        return 0;
+    }
+
+    //Toggling the boolean
+    layerIndicatorChanged = (layerIndicatorChanged + 1)%2;
+    blinkTime += RGB_BLINK_FAST_PERIOD_MS;
+    return RGB_BLINK_FAST_PERIOD_MS;
+}
+
+
+/* Managing indicator color based on state and layer */
+bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
+    //Handling user mode toggle by updating indicator LED for few seconds
+    rgb_t rgbValue = hsv_to_rgb(OFF_COLOR);
+
+    //Capslock
+    if (host_keyboard_led_state().caps_lock) {
+        rgbValue = hsv_to_rgb(CAPS_INDIC_COLOR);
+    } else if (layerIndicatorChanged == 1) {
+        rgbValue = hsv_to_rgb(CONF_CHANGED_COLOR);
+    } else if(kb_config.rgb_layer_change) {
+        //Color depending current activated layer
+        switch(get_highest_layer(layer_state|default_layer_state)) {
+            case _FN:
+                rgbValue = hsv_to_rgb(LAYER_FN_COLOR);
+                break;
+            case _MEDIA:
+                rgbValue = hsv_to_rgb(LAYER_MEDIA_COLOR);
+                break;
+            case _GAME:
+                rgbValue = hsv_to_rgb(LAYER_GAMING_COLOR);
+                break;
+            case _MAC:
+                rgbValue = hsv_to_rgb(LAYER_MAC_COLOR);
+                break;
+            default:
+                break;
+        }
+    }
+
+    //Update indicator LED
+    RGB_MATRIX_INDICATOR_SET_COLOR(RGB_INDICATOR_LED_IDX, rgbValue.r, rgbValue.g, rgbValue.b);
+
+    //Override color with indicator change color if needed
+    if (layerIndicatorChanged == 1 && blinkTime == 0) {
+         //Cancelling deferred callback
+        cancel_deferred_exec(rgbIndic_token);
+        rgbIndic_token = INVALID_DEFERRED_TOKEN;
+
+        //Indicator will be on for RGB_BLINK_DURATION duration and reset to off through callback
+        rgbIndic_token = defer_exec(5, indicatorParamChangedCallback, NULL);
+    }
+
+    return false;
+}
